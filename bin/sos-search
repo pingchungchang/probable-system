@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Search the index. Use --repl to avoid reloading CLIP for every query."""
+import argparse
+import logging
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from sospoc.search import Searcher, render  # noqa: E402
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("prompt", nargs="*", help="natural-language query")
+    ap.add_argument("--db", type=Path, default=Path("sos.db"))
+    ap.add_argument("-n", type=int, default=10, help="results to show")
+    ap.add_argument("--timings", action="store_true")
+    ap.add_argument("--relative-to", type=Path, default=None, help="shorten printed paths")
+    ap.add_argument("--repl", action="store_true", help="interactive; model loaded once")
+    ap.add_argument("--threads", type=int, default=None)
+    a = ap.parse_args()
+
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
+    if not a.db.exists():
+        ap.error(f"{a.db} not found — run sos-index first")
+    if not a.prompt and not a.repl:
+        ap.error("give a prompt, or use --repl")
+
+    s = Searcher(a.db, threads=a.threads)
+
+    if a.prompt:
+        print(render(s.query(" ".join(a.prompt), a.n), a.timings, a.relative_to))
+        if not a.repl:
+            return 0
+
+    while True:
+        try:
+            q = input("\nsos> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if q:
+            print(render(s.query(q, a.n), a.timings, a.relative_to))
+
+
+def _run_quietly_on_broken_pipe(fn) -> int:
+    """`sos-search cat | head -3` must not produce a traceback.
+
+    When the reader closes early, Python raises BrokenPipeError and then emits a
+    second complaint at interpreter shutdown while flushing stdout. Pointing the
+    fd at /dev/null before exiting suppresses that. 141 = 128 + SIGPIPE, which is
+    what a shell expects.
+    """
+    try:
+        return fn()
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 141
+
+
+if __name__ == "__main__":
+    raise SystemExit(_run_quietly_on_broken_pipe(main))

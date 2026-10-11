@@ -1,0 +1,10 @@
+# Non-Nix fallback only. On NixOS use `nix develop` (flake.nix) — pip wheels
+# will not link against the system loader without nix-ld or an FHS env.
+#
+torch>=2.2           # CPU wheel: pip install torch --index-url https://download.pytorch.org/whl/cpu
+open_clip_torch>=2.24
+pillow>=10.0
+numpy>=1.26
+watchdog>=4.0        # stage 1 event source; dropped in stage 2
+python-magic>=0.4.27 # optional; falls back to extension matching
+sqlite-vec>=0.1.6    # optional; falls back to numpy brute force

@@ -1,0 +1,22 @@
+*.db
+*.db-wal
+*.db-shm
+.venv/
+__pycache__/
+corpus/*
+!corpus/.gitkeep
+fuse/vendor/
+
+# nix
+.direnv/
+result
+
+# act / CI scratch
+fixtures/
+*.txt.tmp
+out.txt
+err*.txt
+score.txt
+repl.txt
+pipe-err.txt
+q.txt

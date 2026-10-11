@@ -1,0 +1,29 @@
+# Twenty queries, written BEFORE the first search. Commit this file, then search.
+# Rewriting these after seeing results is the fastest way to a false positive (PLAN.md §8 P4).
+#
+# Five per kind. Phrase them the way you would actually think of them.
+#
+# --- concrete object ---
+1.
+2.
+3.
+4.
+5.
+# --- scene / atmosphere ---
+6.
+7.
+8.
+9.
+10.
+# --- fine-grained visual ---
+11.
+12.
+13.
+14.
+15.
+# --- text-bearing ---
+16.
+17.
+18.
+19.
+20.

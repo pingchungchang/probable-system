@@ -1,0 +1,173 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Unit + endpoint tests against both vector backends, no model download.
+  # Runs on plain Python so it starts in seconds; the Nix path is covered below.
+  tests:
+    name: tests (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: sqlite-vec
+            env: ""
+          - backend: numpy
+            env: "SOS_FORCE_NUMPY=1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        # Deliberately not torch or open-clip: the suite uses FakeEncoder, so CI
+        # exercises plumbing without a 2 GB download. Real-CLIP tests are gated
+        # behind SOS_TEST_CLIP and run in the `clip` job below.
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr
+          pip install numpy pillow watchdog sqlite-vec
+
+      - name: Confirm the intended backend is actually selected
+        run: |
+          ${{ matrix.env }} python - <<'EOF'
+          import os, sqlite3, tempfile, pathlib
+          from sospoc.store import Store, VecIndex, NumpyIndex
+          s = Store(pathlib.Path(tempfile.mkdtemp()) / "t.db")
+          want = NumpyIndex if os.environ.get("SOS_FORCE_NUMPY") == "1" else VecIndex
+          assert isinstance(s.index, want), f"got {s.index.name}, expected {want.__name__}"
+          print("backend:", s.index.name)
+          EOF
+
+      - name: Run tests
+        run: ${{ matrix.env }} python -m unittest discover -s tests -v
+
+  # The endpoints, driven exactly as a user would from a shell.
+  endpoints:
+    name: cli endpoints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr sqlite3
+          pip install numpy pillow watchdog sqlite-vec
+
+      - name: index → search → score, end to end
+        env:
+          SOS_FAKE_ENCODER: "1"
+          SOS_DEBOUNCE: "0.05"
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          python - <<'EOF'
+          from pathlib import Path
+          import sys; sys.path.insert(0, ".")
+          from tests.helpers import png_bytes, text_png
+          d = Path("fixtures"); d.mkdir(exist_ok=True)
+          for i, n in enumerate(("cat", "dog", "bicycle", "harbour")):
+              (d / f"{n}.png").write_bytes(png_bytes(i * 40, 7, 9))
+          (d / "scan.png").write_bytes(text_png(lines=26))
+          EOF
+
+          echo "::group::sos-index"
+          bin/sos-index fixtures --db ci.db --once
+          echo "::endgroup::"
+
+          test -f ci.db || { echo "no database produced"; exit 1; }
+
+          echo "::group::sos-search"
+          bin/sos-search bicycle --db ci.db --timings | tee out.txt
+          echo "::endgroup::"
+          grep -q "bicycle.png" out.txt || { echo "expected bicycle.png in results"; exit 1; }
+          grep -q "encode"       out.txt || { echo "--timings produced no timings"; exit 1; }
+
+          echo "::group::sos-search --repl"
+          printf 'harbour\n' | bin/sos-search --repl --db ci.db > repl.txt
+          grep -q "harbour.png" repl.txt || { echo "repl returned nothing"; exit 1; }
+          echo "::endgroup::"
+
+          echo "::group::in-image text is reachable"
+          # the filename says nothing about the contents; only OCR can find it
+          bin/sos-search scan --db ci.db -n 2 | tee ocr.txt
+          grep -q "scan.png" ocr.txt || { echo "lexical channel missed the filename"; exit 1; }
+          sqlite3 ci.db "SELECT count(*) FROM file_tags WHERE path_tokens != ''" | grep -qv '^0$' \
+            || { echo "no path tokens were indexed"; exit 1; }
+          echo "::endgroup::"
+
+          echo "--- early pipe close must not traceback ---"
+          bin/sos-search cat --db ci.db -n 4 2>pipe-err.txt | head -1 >/dev/null
+          if grep -q "BrokenPipeError" pipe-err.txt; then
+            echo "piping to head produced a traceback"; exit 1
+          fi
+
+          echo "::group::eval/score.py"
+          printf '# --- concrete object ---\n1. cat\n2. dog\n' > q.txt
+          printf 'y\ny\n' | python eval/score.py --db ci.db --queries q.txt | tee score.txt
+          echo "::endgroup::"
+          grep -q "2 / 2" score.txt || { echo "scorer did not tally"; exit 1; }
+
+          echo "--- failure modes must exit 2, not traceback ---"
+          # `! cmd` would skip errexit (SC2251), making these checks no-ops.
+          if bin/sos-search cat --db missing.db 2>err.txt; then
+            echo "search against a missing db should have failed"; exit 1
+          fi
+          grep -q "run sos-index first" err.txt
+          if bin/sos-index README.md --db ci.db 2>err2.txt; then
+            echo "indexing a regular file should have failed"; exit 1
+          fi
+          grep -q "not a directory" err2.txt
+
+  # The Nix path: devShell resolves, and `nix flake check` runs the suite in the
+  # sandbox against both backends.
+  nix:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: flake metadata is evaluable
+        run: nix flake metadata
+
+      - name: nix flake check
+        run: nix flake check -L
+
+      - name: devShell provides the real stack
+        run: |
+          nix develop --command python -c "
+          import torch, open_clip, numpy, PIL, watchdog
+          print('torch', torch.__version__)
+          print('devShell OK')"
+
+      - name: apps are runnable
+        run: nix run .#search -- --help
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .

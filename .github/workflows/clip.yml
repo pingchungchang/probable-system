@@ -1,0 +1,50 @@
+name: CLIP (slow)
+
+# Downloads ~600 MB of model weights, so it does not run per-push.
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+jobs:
+  real-model:
+    name: real CLIP-ViT-B/16
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-vit-b16
+
+      - run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install open_clip_torch pillow numpy watchdog sqlite-vec
+
+      - name: Assumptions nothing else verifies
+        env:
+          SOS_TEST_CLIP: "1"
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m unittest tests.test_embed -v
+
+      - name: Real embeddings end to end
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          python - <<'EOF'
+          # A red square and a blue square: crude, but CLIP should tell them apart.
+          from PIL import Image
+          from pathlib import Path
+          d = Path("fixtures"); d.mkdir(exist_ok=True)
+          Image.new("RGB", (224, 224), (200, 20, 20)).save(d / "red.png")
+          Image.new("RGB", (224, 224), (20, 20, 200)).save(d / "blue.png")
+          EOF
+          bin/sos-index fixtures --db real.db --once
+          bin/sos-search "a solid red image" --db real.db --timings | tee r.txt
+          head -1 r.txt | grep -q red.png || { echo "CLIP ranked blue above red"; exit 1; }

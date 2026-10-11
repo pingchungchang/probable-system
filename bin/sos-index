@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Backfill a directory and then watch it. Ctrl-C to stop."""
+import argparse
+import logging
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from sospoc.index import Indexer  # noqa: E402
+from sospoc.ocr import get_ocr  # noqa: E402
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("root", type=Path, help="directory to index")
+    ap.add_argument("--db", type=Path, default=Path("sos.db"))
+    ap.add_argument("--threads", type=int, default=None, help="torch CPU threads")
+    ap.add_argument("--once", action="store_true", help="backfill and exit, no watching")
+    ap.add_argument("--no-ocr", action="store_true", help="skip in-image text recognition")
+    ap.add_argument(
+        "--ocr-all", action="store_true", help="OCR every image, bypassing the text-detector gate"
+    )
+    ap.add_argument("-v", "--verbose", action="store_true")
+    a = ap.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if a.verbose else logging.INFO,
+        format="%(levelname)s %(message)s",
+    )
+    if not a.root.is_dir():
+        ap.error(f"{a.root} is not a directory")
+
+    Indexer(
+        a.root,
+        a.db,
+        threads=a.threads,
+        ocr=get_ocr(enabled=not a.no_ocr, gate=not a.ocr_all),
+    ).run(watch=not a.once)
+    return 0
+
+
+def _run_quietly_on_broken_pipe(fn) -> int:
+    """`sos-search cat | head -3` must not produce a traceback.
+
+    When the reader closes early, Python raises BrokenPipeError and then emits a
+    second complaint at interpreter shutdown while flushing stdout. Pointing the
+    fd at /dev/null before exiting suppresses that. 141 = 128 + SIGPIPE, which is
+    what a shell expects.
+    """
+    try:
+        return fn()
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 141
+
+
+if __name__ == "__main__":
+    raise SystemExit(_run_quietly_on_broken_pipe(main))
