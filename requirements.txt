@@ -1,7 +1,9 @@
 # Non-Nix fallback only. On NixOS use `nix develop` (flake.nix) — pip wheels
 # will not link against the system loader without nix-ld or an FHS env.
 #
-torch>=2.2           # CPU wheel: pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.2           # CPU wheels: install torch and torchvision together, from one index:
+torchvision          #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+                     # A +cpu torch beside a PyPI torchvision cannot load torchvision's ops.
 open_clip_torch>=2.24
 pillow>=10.0
 numpy>=1.26
